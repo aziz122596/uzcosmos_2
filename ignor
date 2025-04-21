@@ -1,0 +1,30 @@
+# Виртуальное окружение
+venv/
+.venv/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Редакторы и ОС
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Папки с результатами, логами и моделями
+checkpoints_road_seg/
+
+# Кэш Hugging Face / Datasets
+.cache/
+*.arrow
+
+# Большие файлы данных 
+ *.tiff
+ *.tif
+ data/
+
+# Локальные артефакты
+ *.png 
