@@ -6,8 +6,8 @@
 
 - `train.py`: Основной скрипт для обучения и валидации модели.
 - `evaluate.py`: Скрипт для оценки обученной модели на тестовом наборе и визуализации предсказаний.
-- `data_loader.py`: Содержит класс `SegmentationDataGenerator` (Keras Sequence) для загрузки данных и функции для аугментации/препроцессинга.
-- `model_builder.py`: Содержит функцию `build_unet_model` для создания архитектуры сегментации (U-Net).
+- `main_1.py`: Содержит класс `SegmentationDataGenerator` (Keras Sequence) для загрузки данных и функции для аугментации/препроцессинга.
+- `model.py`: Содержит функцию `build_unet_model` для создания архитектуры сегментации (U-Net).
 - `metrics_and_losses.py`: Определяет или импортирует функции потерь и метрик из `segmentation_models`.
 - `utils.py`: Содержит вспомогательные функции (построение графиков, визуализация).
 - `requirements.txt`: Список необходимых Python библиотек (для Keras/TensorFlow).
@@ -22,8 +22,8 @@
 
 1.  **Клонируйте репозиторий:**
     ```bash
-   git clone [https://github.com/aziz122596/uzcosmos_1.git](https://github.com/aziz122596/uzcosmos_1.git) 
-    cd road-segmentation-unet-keras
+   git clone [https://github.com/aziz122596/uzcosmos_1.git] (https://github.com/aziz122596/uzcosmos_1.git) 
+    cd uzcosmos_2
     ```
 
 2.  **Скачайте датасет:**
