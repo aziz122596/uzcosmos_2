@@ -1,67 +1,85 @@
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 
-# Функция денормализации
-def denormalize(tensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
-    """Денормализует тензор изображения для визуализации."""
-    if not isinstance(tensor, torch.Tensor):
-         return tensor # Если это уже numpy array
+def plot_training_history(history, save_path="training_history.png"):
+    """
+    Строит графики истории обучения модели Keras (loss и метрики).
+    """
+    # Проверяем наличие ключей 
+    loss_key = 'loss'
+    val_loss_key = 'val_loss'
+    metrics_keys = [k for k in history.history.keys() if k not in ['loss', 'val_loss', 'lr']]
+    val_metrics_keys = [k for k in metrics_keys if k.startswith('val_')]
+    train_metrics_keys = [k for k in metrics_keys if not k.startswith('val_')]
 
-    # Клонируем тензор
-    tensor = tensor.clone().detach().cpu()
+    num_plots = 1 + len(train_metrics_keys) 
+    plt.figure(figsize=(6 * num_plots, 5))
 
-    # Применяем обратное преобразование для каждого канала
-    for t, m, s in zip(tensor, mean, std):
-        t.mul_(s).add_(m)
+    # График Лосса
+    ax_loss = plt.subplot(1, num_plots, 1)
+    ax_loss.plot(history.epoch, history.history[loss_key], label="Train loss")
+    if val_loss_key in history.history:
+        ax_loss.plot(history.epoch, history.history[val_loss_key], label="Validation loss")
+    ax_loss.set_xlabel("Эпоха")
+    ax_loss.set_ylabel("Loss")
+    ax_loss.set_title("История функции потерь")
+    ax_loss.legend()
+    ax_loss.grid(True)
 
-    # Преобразуем в numpy и меняем порядок осей (C, H, W) -> (H, W, C)
-    img_np = tensor.numpy().transpose(1, 2, 0)
-
-    # Обрезаем значения до [0, 1] и конвертируем в uint8 [0, 255]
-    img_np = np.clip(img_np, 0, 1)
-    img_np = (img_np * 255).astype(np.uint8)
-
-    return img_np
-
-
-def visualize_predictions(images, true_masks, predicted_masks, num_examples=5, filename="prediction_examples.png"):
-    """Визуализирует N примеров: Изображение | Истинная маска | Предсказанная маска."""
-    num_examples = min(num_examples, len(images))
-    if num_examples == 0:
-        print("Нет примеров для визуализации.")
-        return
-
-    plt.figure(figsize=(15, 5 * num_examples))
-    for i in range(num_examples):
-        # Исходное изображение 
-        img = denormalize(images[i])
-
-        # Истинная маска (предполагаем (B, 1, H, W) тензор)
-        true_mask = true_masks[i].cpu().numpy().squeeze() 
-
-        # Предсказанная маска (предполагаем (B, 1, H, W) тензор вероятностей)
-        pred_mask_prob = predicted_masks[i].cpu().numpy().squeeze()
-        pred_mask_binary = (pred_mask_prob > 0.5).astype(np.uint8) # Бинаризуем по порогу 0.5
-
-        # Отображение
-        plt.subplot(num_examples, 3, i * 3 + 1)
-        plt.imshow(img)
-        plt.title(f"Изображение {i+1}")
-        plt.axis('off')
-
-        plt.subplot(num_examples, 3, i * 3 + 2)
-        plt.imshow(true_mask, cmap='gray')
-        plt.title(f"Истинная маска {i+1}")
-        plt.axis('off')
-
-        plt.subplot(num_examples, 3, i * 3 + 3)
-        plt.imshow(pred_mask_binary, cmap='gray')
-        plt.title(f"Предсказание {i+1}")
-        plt.axis('off')
+    # Графики Метрик
+    for i, metric_name in enumerate(train_metrics_keys):
+        val_metric_name = f"val_{metric_name}"
+        ax_acc = plt.subplot(1, num_plots, i + 2)
+        ax_acc.plot(history.epoch, history.history[metric_name], label=f"Train {metric_name}")
+        if val_metric_name in history.history:
+            ax_acc.plot(history.epoch, history.history[val_metric_name], label=f"Validation {metric_name}")
+        ax_acc.set_xlabel("Эпоха")
+        ax_acc.set_ylabel("Метрика")
+        ax_acc.set_title(f"История метрики: {metric_name}")
+        ax_acc.legend()
+        ax_acc.grid(True)
 
     plt.tight_layout()
-    plt.savefig(filename)
-    print(f"Визуализация предсказаний сохранена в файл: {filename}")
-    plt.show() 
+    plt.savefig(save_path)
+    print(f"График истории обучения сохранен в: {save_path}")
+    plt.close()
+
+
+def visualize_predictions(image, true_mask, predicted_mask, save_path="prediction_example.png"):
+    """
+    Визуализирует один пример: Изображение | Истинная маска | Предсказанная маска.
+    Предполагает, что image - это (H, W, C) numpy array в диапазоне [0, 1] или [0, 255],
+    а маски - (H, W) или (H, W, 1) бинарные numpy array (0/1).
+    """
+    # Нормализуем изображение к [0, 1] для отображения, если оно [0, 255]
+    if image.max() > 1.0:
+        image = image / 255.0
+    image = np.clip(image, 0, 1) 
+
+    # Убираем размерность канала у масок, если есть
+    if true_mask.ndim == 3:
+        true_mask = true_mask.squeeze(-1)
+    if predicted_mask.ndim == 3:
+        predicted_mask = predicted_mask.squeeze(-1)
+
+    # Бинаризуем предсказанную маску 
+    if predicted_mask.max() <= 1.0 and predicted_mask.min() >= 0.0 and len(np.unique(predicted_mask)) > 2: 
+         predicted_mask = (predicted_mask > 0.5).astype(np.uint8) # Порог 0.5
+
+    fig, axs = plt.subplots(1, 3, figsize=(18, 6))
+    axs[0].imshow(image)
+    axs[0].set_title("Изображение")
+    axs[0].axis('off')
+
+    axs[1].imshow(true_mask, cmap="gray")
+    axs[1].set_title("Истинная маска")
+    axs[1].axis('off')
+
+    axs[2].imshow(predicted_mask, cmap="gray")
+    axs[2].set_title("Предсказанная маска")
+    axs[2].axis('off')
+
+    plt.tight_layout()
+    plt.savefig(save_path)
+    print(f"Визуализация примера сохранена в: {save_path}")
     plt.close()

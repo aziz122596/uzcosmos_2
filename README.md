@@ -1,39 +1,46 @@
-# Сегментация дорог на аэроснимках с помощью U-Net
+# Сегментация дорог на аэроснимках (Keras + Segmentation Models)
 
-Этот проект реализует модель семантической сегментации (U-Net с бэкбоном ResNet34) для обнаружения дорог на аэроснимках.
+Этот проект реализует модель семантической сегментации (U-Net с бэкбоном EfficientNet/ResNet) с использованием Keras и библиотеки `segmentation-models` для обнаружения дорог на аэроснимках.
 
 ## Структура проекта
 
 - `train.py`: Основной скрипт для обучения и валидации модели.
-- `evaluate.py`: Скрипт для оценки обученной модели на тестовом (валидационном) наборе и визуализации предсказаний.
-- `main_1.py`: Содержит класс `RoadDataset` для загрузки данных и функции для аугментации/препроцессинга.
-- `model.py`: Содержит функцию `build_model` для создания архитектуры сегментации (U-Net).
-- `metrics.py`: Содержит функции для расчета метрик IoU и Dice.
-- `utils.py`: Содержит вспомогательные функции (например, `visualize_predictions`).
-- `requirements.txt`: Список необходимых Python библиотек.
+- `evaluate.py`: Скрипт для оценки обученной модели на тестовом наборе и визуализации предсказаний.
+- `data_loader.py`: Содержит класс `SegmentationDataGenerator` (Keras Sequence) для загрузки данных и функции для аугментации/препроцессинга.
+- `model_builder.py`: Содержит функцию `build_unet_model` для создания архитектуры сегментации (U-Net).
+- `metrics_and_losses.py`: Определяет или импортирует функции потерь и метрик из `segmentation_models`.
+- `utils.py`: Содержит вспомогательные функции (построение графиков, визуализация).
+- `requirements.txt`: Список необходимых Python библиотек (для Keras/TensorFlow).
 - `README.md`: Этот файл.
 - `.gitignore`: Определяет файлы и папки, игнорируемые Git.
-- `checkpoints_road_seg/`: Папка (создается `train.py`) для сохранения лучшей модели (`best_model.pth`).
-- `training_history_road_seg.png`: Графики лосса/метрик обучения (создается `train.py`).
-- `prediction_examples_road_seg.png`: Примеры визуализации предсказаний (создается `evaluate.py`).
+- `checkpoints_keras/`: Папка (создается `train.py`) для сохранения лучшей модели (`.h5` файлы).
+- `logs_keras/`: Папка (создается `train.py`) для логов TensorBoard.
+- `training_history_keras.png`: Графики лосса/метрик обучения (создается `train.py`).
+- `prediction_example_*.png`: Примеры визуализации предсказаний (создается `evaluate.py`).
 
 ## Установка
 
 1.  **Клонируйте репозиторий:**
     ```bash
-    git clone [https://github.com/aziz122596/uzcosmos_2.git](https://github.com/aziz122596/uzcosmos_2.git)
-    cd road-segmentation-unet
+   git clone [https://github.com/aziz122596/uzcosmos_1.git](https://github.com/aziz122596/uzcosmos_1.git) 
+    cd road-segmentation-unet-keras
     ```
 
 2.  **Скачайте датасет:**
-    - Выберите и скачайте один из датасетов: [Massachusetts Roads Dataset](https://www.cs.toronto.edu/~vmnih/data/) или [DeepGlobe Road Extraction Dataset](https://competitions.codalab.org/competitions/18467).
+    - Выберите и скачайте один из датасетов: [Massachusetts Roads Dataset](https://www.cs.toronto.edu/~vmnih/data/) или [DeepGlobe Road Extraction Dataset](https://competitions.codalab.org/competitions/18467). import kagglehub
+
+# Download latest version
+path = kagglehub.dataset_download("insaff/massachusetts-roads-dataset")
+
+print("Path to dataset files:", path)
     - Распакуйте архив.
-    - **ВАЖНО:** Запомните путь к папке с датасетом.
+    - **ВАЖНО:** Убедитесь, что у вас есть папка (например, `training`), которая содержит подпапки `input` (с `.png` изображениями) и `output` (с `.png` масками). Запомните **полный путь** к этой папке (`training` или аналогичной).
 
 3.  **Настройте пути в скриптах:**
     - Откройте файлы `train.py` и `evaluate.py`.
-    - Найдите переменную `DATA_DIR` и **замените** `/path/to/your/dataset/` на **реальный путь** 
-    - Убедитесь, что переменные `IMAGE_DIR_NAME`, `MASK_DIR_NAME`, `IMG_EXTENSION`, `MASK_EXTENSION` соответствуют структуре вашего датасета. Для Massachusetts Roads это обычно `tiff/images` и `tiff/masks` с расширениями `.tiff` и `.tif`.
+    - Найдите переменную `DATA_ROOT_DIR` и **замените** `/path/to/your/training_data_folder/` на **реальный путь** к вашей папке, содержащей подпапки `input` и `output`.
+    - Убедитесь, что `IMAGE_DIR_NAME = 'input'` и `MASK_DIR_NAME = 'output'`.
+    - В `evaluate.py` найдите `MODEL_PATH` и подготовьтесь указать путь к файлу `.h5` лучшей модели после обучения.
 
 4.  **Создайте и активируйте виртуальное окружение (рекомендуется):**
     ```bash
@@ -48,52 +55,38 @@
     ```bash
     pip install -r requirements.txt
     ```
-    *Примечание: Установка `torch` может потребовать специфических команд в зависимости от вашей ОС и наличия GPU (CUDA). См. официальный сайт PyTorch. Установка `opencv` также может иметь нюансы.*
+    *Примечание: Установка `tensorflow` может потребовать специфических шагов для поддержки GPU (CUDA, cuDNN). См. официальную документацию TensorFlow.*
 
 ## Использование
 
 1.  **Обучение модели:**
-    Убедитесь, что пути к данным в `train.py` настроены правильно. Запустите обучение:
+    Убедитесь, что путь `DATA_ROOT_DIR` в `train.py` настроен правильно. Запустите обучение:
     ```bash
     python train.py
     ```
-    - Лучшая модель будет сохранена в `checkpoints_road_seg/best_model.pth`.
-    - Графики обучения будут сохранены в `training_history_road_seg.png`.
+    - Лучшая модель будет сохранена в папку `checkpoints_keras/` (имя файла будет включать эпоху и метрику).
+    - Графики обучения будут сохранены в `training_history_keras.png`.
+    - Логи для TensorBoard будут в папке `logs_keras/`.
 
 2.  **Оценка модели:**
-    Убедитесь, что пути к данным и к сохраненной модели (`CHECKPOINT_PATH`) в `evaluate.py` настроены правильно. Запустите оценку:
+    - **Найдите имя лучшей модели** (`.h5` файл) в папке `checkpoints_keras/`.
+    - **Укажите этот полный путь** в переменной `MODEL_PATH` в файле `evaluate.py`.
+    - Убедитесь, что `DATA_ROOT_DIR` в `evaluate.py` указан верно.
+    - Запустите оценку:
     ```bash
     python evaluate.py
     ```
-    - Метрики IoU и Dice будут выведены в консоль.
-    - Примеры предсказаний будут сохранены в `prediction_examples_road_seg.png`.
+    - Метрики (Loss, IoU, Dice) будут выведены в консоль.
+    - Примеры предсказаний будут сохранены в файлы `prediction_example_*.png`.
 
 ## Подход
-
-- **Модель:** U-Net с предобученным энкодером ResNet34 (`segmentation-models-pytorch`).
-- **Датасет:** Massachusetts Roads / DeepGlobe Roads (требуется ручная загрузка и настройка путей).
-- **Предобработка:** Изменение размера, нормализация (стандартная или ImageNet), бинаризация масок.
-- **Аугментация:** Геометрические и яркостные аугментации (`albumentations`).
-- **Функция потерь:** Dice Loss.
-- **Оптимизатор:** AdamW с планировщиком `ReduceLROnPlateau`.
-- **Метрики:** Intersection over Union (IoU) и Dice Coefficient.
-- **Обучение:** Кастомный цикл обучения/валидации на PyTorch.
+(Остается как в предыдущей версии README)
+...
 
 ## Результаты (Пример)
-
-*Замените на ваши реальные результаты после запуска `evaluate.py`*
-
-- **Test IoU:** 0.XX
-- **Test Dice:** 0.XX
-
-*(Можно вставить сюда изображение `prediction_examples_road_seg.png`)*
+(Остается как в предыдущей версии README)
+...
 
 ## Возможные улучшения
-
-- Подбор гиперпараметров (архитектура, энкодер, размер изображений, LR, батч, лосс).
-- Использование более сложных моделей (DeepLabV3+).
-- Применение техник для работы с несбалансированными данными (Focal Loss, Tversky Loss).
-- **Пост-обработка:** Применение морфологических операций (открытие/закрытие) к предсказанным маскам для сглаживания и удаления шума (см. `cv2.morphologyEx`).
-- **Обучение на плитках (Tiling):** Для работы с очень большими исходными изображениями без сильного уменьшения разрешения.
-- **Векторизация:** Преобразование растровых масок в векторные полигоны для ГИС (`rasterio`, `shapely`).
-- Использование конфигурационных файлов (`.yaml`, `.json`) вместо хардкодинга параметров.
+(Остается как в предыдущей версии README)
+...

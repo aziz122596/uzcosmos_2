@@ -1,153 +1,158 @@
 import os
-import cv2 
 import numpy as np
-import torch
-from torch.utils.data import Dataset
-from PIL import Image 
-
-# --- Функции Аугментации и Препроцессинга ---
+from tensorflow import keras
+from skimage.io import imread
 import albumentations as A
-from albumentations.pytorch import ToTensorV2
+import math
+import cv2 
 
-def get_training_augmentation(height, width):
-    """Возвращает конвейер аугментаций для обучающих данных."""
-    train_transform = [
+class SegmentationDataGenerator(keras.utils.Sequence):
+    """
+    Генератор данных для Keras для задач сегментации.
+    Читает изображения и маски из папок, используя полные имена файлов.
+    """
+    def __init__(self, image_dir, mask_dir, image_filenames, batch_size=1, 
+                 img_size=(256, 256), n_channels=3, n_classes=1,
+                 augmentation=None, preprocessing=None, shuffle_on_epoch_end=True):
+        """
+        Инициализация генератора.
+        Args:
+            image_dir (str): Путь к папке с изображениями.
+            mask_dir (str): Путь к папке с масками.
+            image_filenames (list): Список ПОЛНЫХ имен файлов изображений (e.g., ['img-1.png', ...]).
+            batch_size (int): Размер батча.
+            img_size (tuple): Размер изображения (height, width).
+            n_channels (int): Количество каналов изображения.
+            n_classes (int): Количество классов сегментации.
+            augmentation (albumentations.Compose, optional): Конвейер аугментаций.
+            preprocessing (albumentations.Compose, optional): Конвейер препроцессинга.
+            shuffle_on_epoch_end (bool): Перемешивать ли данные в конце эпохи.
+        """
+        if not os.path.isdir(image_dir): raise ValueError(f"Директория изображений не найдена: {image_dir}")
+        if not os.path.isdir(mask_dir): raise ValueError(f"Директория масок не найдена: {mask_dir}")
+
+        self.image_dir = image_dir
+        self.mask_dir = mask_dir
+        self.image_filenames = image_filenames 
+        self.batch_size = batch_size
+        self.img_size = img_size
+        self.n_channels = n_channels
+        self.n_classes = n_classes
+        self.augmentation = augmentation
+        self.preprocessing = preprocessing
+        self.shuffle = shuffle_on_epoch_end
+        self.indexes = np.arange(len(self.image_filenames))
+        self.on_epoch_end()
+
+        print(f"Генератор создан: {len(self.image_filenames)} сэмплов, размер батча {self.batch_size}.")
+        if not self.image_filenames:
+             print(f"Предупреждение: Список image_filenames пуст!")
+
+    def __len__(self):
+        """Возвращает количество батчей за эпоху."""
+        return math.ceil(len(self.image_filenames) / self.batch_size)
+
+    def on_epoch_end(self):
+        """Перемешивает индексы в конце каждой эпохи."""
+        if self.shuffle:
+            np.random.shuffle(self.indexes)
+
+    def __getitem__(self, index):
+        """Генерирует один батч данных (X, y)."""
+        start_idx = index * self.batch_size
+        end_idx = (index + 1) * self.batch_size
+        batch_indexes = self.indexes[start_idx:end_idx]
+
+        # Получаем ПОЛНЫЕ ИМЕНА файлов для батча
+        batch_image_filenames = [self.image_filenames[i] for i in batch_indexes]
+
+        X = np.empty((len(batch_image_filenames), *self.img_size, self.n_channels), dtype=np.float32)
+        y = np.empty((len(batch_image_filenames), *self.img_size, self.n_classes), dtype=np.uint8)
+
+        for i, img_filename in enumerate(batch_image_filenames):
+            try:
+                # Строим пути используя полные имена файлов
+                img_path = os.path.join(self.image_dir, img_filename)
+                mask_path = os.path.join(self.mask_dir, img_filename) 
+
+                # Загрузка изображения и маски
+                img = imread(img_path)
+                mask = imread(mask_path, as_gray=True)
+
+                # Проверка размерности изображения
+                if img is None: raise ValueError(f"imread не смог прочитать изображение: {img_path}")
+                if mask is None: raise ValueError(f"imread не смог прочитать маску: {mask_path}")
+
+                if len(img.shape) == 2:
+                    img = np.stack((img,)*3, axis=-1)
+                elif img.shape[2] == 4:
+                    img = img[:,:,:3]
+                if img.shape[2] != self.n_channels:
+                    raise ValueError(f"Неожиданное кол-во каналов в {img_path}: {img.shape[2]}")
+
+                # Обработка маски
+                mask = (mask > 0).astype(np.uint8) # Бинаризация 0/1
+                mask = np.expand_dims(mask, axis=-1) # -> (H, W, 1)
+
+                # 1. Аугментация
+                sample = {'image': img, 'mask': mask}
+                if self.augmentation:
+                    sample = self.augmentation(**sample)
+
+                # 2. Препроцессинг (включая ресайз, если он там есть)
+                if self.preprocessing:
+                    sample = self.preprocessing(**sample)
+                elif sample['image'].shape[:2] != self.img_size:
+                     # Если препроцессинга нет, но размер не совпадает - ресайзим
+                     resize_fn = A.Resize(height=self.img_size[0], width=self.img_size[1])
+                     sample = resize_fn(**sample)
+
+
+                X[i,] = sample['image']
+                y[i,] = sample['mask']
+
+            except Exception as e:
+                print(f"\nОшибка при обработке файла: {img_filename}. Пропуск. Ошибка: {e}")
+                X[i,] = np.zeros((*self.img_size, self.n_channels), dtype=np.float32)
+                y[i,] = np.zeros((*self.img_size, self.n_classes), dtype=np.uint8)
+
+        return X, y
+
+# --- Функции для создания конвейеров Albumentations ---
+
+def get_training_augmentation_pipeline(height, width):
+    """Возвращает конвейер аугментаций для обучения."""
+    return A.Compose([
         A.Resize(height, width),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomRotate90(p=0.5),
+        A.Transpose(p=0.5),
         A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=15, p=0.7, border_mode=cv2.BORDER_CONSTANT),
-        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.7),
+        A.RandomBrightnessContrast(p=0.5),
+        A.RandomGamma(p=0.25),
+        A.IAAEmboss(p=0.25),
+        A.Blur(p=0.1, blur_limit=3),
+        A.OneOf([
+            A.ElasticTransform(p=0.5, alpha=120, sigma=120 * 0.05, alpha_affine=120 * 0.03),
+            A.GridDistortion(p=0.5),
+            A.OpticalDistortion(p=1, distort_limit=1, shift_limit=0.5)
+        ], p=0.3),
         A.GaussNoise(p=0.2),
-    ]
-    return A.Compose(train_transform)
+    ])
 
-def get_validation_augmentation(height, width):
-    """Возвращает конвейер аугментаций для валидационных/тестовых данных."""
-    test_transform = [
+def get_validation_augmentation_pipeline(height, width):
+    """Возвращает конвейер аугментаций для валидации (только ресайз)."""
+    return A.Compose([
         A.Resize(height, width),
-    ]
-    return A.Compose(test_transform)
+    ])
 
-def get_preprocessing(preprocessing_fn=None):
-    """Возвращает конвейер препроцессинга (нормализация + конвертация в тензор).
+def get_preprocessing_pipeline(preprocess_input_fn):
+    """Возвращает конвейер препроцессинга.
     Args:
-        preprocessing_fn (callable, optional): Функция нормализации, из segmentation_models_pytorch.
-                                               Если None, используется простая нормализация делением на 255.
+        preprocess_input_fn: Функция из segmentation_models (model.preprocess_input)
     """
-    _transform = []
-    if preprocessing_fn:
-        _transform.append(A.Lambda(image=preprocessing_fn))
-    else:
-        # Простая нормализация к [0, 1]
-        _transform.append(A.Normalize(mean=(0, 0, 0), std=(1, 1, 1), max_pixel_value=255.0))
-
-    _transform.append(ToTensorV2()) 
-    return A.Compose(_transform)
-
-# --- Класс Датасета ---
-class RoadDataset(Dataset):
-    def __init__(self, image_dir, mask_dir, image_ids, img_ext, mask_ext, transform=None, preprocessing=None):
-        self.image_dir = image_dir
-        self.mask_dir = mask_dir
-        self.image_ids = image_ids
-        self.img_ext = img_ext
-        self.mask_ext = mask_ext
-        self.transform = transform
-        self.preprocessing = preprocessing
-        print(f"Dataset создан: {len(self.image_ids)} ID найдено.")
-        if not self.image_ids:
-             print(f"Предупреждение: Список image_ids пуст!")
-
-
-    def __len__(self):
-        return len(self.image_ids)
-
-    def load_image(self, path):
-        """Загружает изображение, пробуя OpenCV и PIL (для TIFF)."""
-        try:
-            # Пробуем OpenCV
-            img = cv2.imread(path)
-            if img is None: 
-                raise ValueError("cv2.imread вернул None")
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) 
-            return img
-        except Exception as e_cv2:
-            try:
-                img_pil = Image.open(path)
-                img = np.array(img_pil)
-                if len(img.shape) == 2: 
-                     img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-                elif img.shape[2] == 4: 
-                     img = img[:, :, :3]
-                return img
-            except Exception as e_pil:
-                print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить изображение {path} ни через OpenCV, ни через PIL: {e_pil}")
-                return None 
-
-    def load_mask(self, path):
-        """Загружает маску как одноканальное изображение."""
-        try:
-            mask = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-            if mask is None:
-                 raise ValueError("cv2.imread вернул None")
-            return mask
-        except Exception as e_cv2:
-
-             try:
-                # Пробуем PIL
-                mask_pil = Image.open(path).convert('L') # Конвертируем в Grayscale
-                mask = np.array(mask_pil)
-                return mask
-             except Exception as e_pil:
-                print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить маску {path} ни через OpenCV, ни через PIL: {e_pil}")
-                return None
-
-
-    def __getitem__(self, idx):
-        image_id = self.image_ids[idx]
-        img_path = os.path.join(self.image_dir, image_id + self.img_ext)
-        mask_path = os.path.join(self.mask_dir, image_id + self.mask_ext)
-
-        image = self.load_image(img_path)
-        mask = self.load_mask(mask_path)
-
-        # Обработка ошибок загрузки
-        if image is None or mask is None:
-             print(f"Пропуск примера из-за ошибки загрузки: ID {image_id}")
-             dummy_img = torch.zeros((3, 256, 256), dtype=torch.float32)
-             dummy_mask = torch.zeros((1, 256, 256), dtype=torch.float32)
-             return dummy_img, dummy_mask
-
-
-        # Бинаризация маски: все что не 0, становится 1
-        mask = (mask > 0).astype(np.float32)
-        mask = np.expand_dims(mask, axis=-1)
-
-        # 1. Применяем аугментации (если есть)
-        if self.transform:
-            try:
-                augmented = self.transform(image=image, mask=mask)
-                image = augmented['image']
-                mask = augmented['mask']
-            except Exception as e:
-                 print(f"Ошибка аугментации для ID {image_id}: {e}")
-                 pass 
-
-        # 2. Применяем препроцессинг (нормализация, ToTensorV2)
-        if self.preprocessing:
-            try:
-                preprocessed = self.preprocessing(image=image, mask=mask)
-                image = preprocessed['image']
-                mask = preprocessed['mask'] 
-            except Exception as e:
-                 print(f"Ошибка препроцессинга для ID {image_id}: {e}")
-                 dummy_img = torch.zeros((3, 256, 256), dtype=torch.float32)
-                 dummy_mask = torch.zeros((1, 256, 256), dtype=torch.float32)
-                 return dummy_img, dummy_mask
-
-
-
-        mask = mask.float()
-
-        return image, mask
+    # Применяем только нормализацию бэкбона
+    return A.Compose([
+        A.Lambda(image=preprocess_input_fn),
+    ])

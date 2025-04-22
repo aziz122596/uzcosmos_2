@@ -1,25 +1,28 @@
-import torch
-import segmentation_models_pytorch as smp
+from segmentation_models import Unet 
 
-def build_model(encoder='resnet34', encoder_weights='imagenet', num_classes=1, activation='sigmoid'):
+def build_unet_model(backbone='resnet34', input_shape=(256, 256, 3), classes=1, activation='sigmoid', encoder_weights='imagenet', encoder_freeze=False):
     """
-    Создает модель сегментации U-Net с использованием segmentation-models-pytorch.
+    Строит модель U-Net с заданным бэкбоном.
 
     Args:
-        encoder (str): Имя энкодера (бэкбона).
-        encoder_weights (str): Веса для инициализации энкодера ('imagenet' или None).
-        num_classes (int): Количество классов (1 для бинарной сегментации).
-        activation (str): Функция активации для выходного слоя ('sigmoid' для бинарной, 'softmax' для мультиклассовой, None если лосс сам применяет активацию).
+        backbone (str): Имя энкодера (бэкбона).
+        input_shape (tuple): Размер входного изображения (H, W, C).
+        classes (int): Количество классов сегментации.
+        activation (str): Функция активации последнего слоя.
+        encoder_weights (str): Веса для энкодера ('imagenet' или None).
+        encoder_freeze (bool): Заморозить ли веса энкодера.
 
     Returns:
-        torch.nn.Module: Модель сегментации.
+        keras.Model: Модель Keras.
     """
-    print(f"Создание модели U-Net с энкодером {encoder}...")
-    model = smp.Unet(
-        encoder_name=encoder,
+    print(f"Создание модели U-Net с бэкбоном {backbone}...")
+    model = Unet(
+        backbone_name=backbone,
+        input_shape=input_shape,
+        classes=classes,
+        activation=activation,
         encoder_weights=encoder_weights,
-        in_channels=3,            
-        classes=num_classes,      
-        activation=activation,   
+        encoder_freeze=encoder_freeze
     )
+    print("Модель создана.")
     return model

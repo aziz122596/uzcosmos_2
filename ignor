@@ -14,17 +14,12 @@ __pycache__/
 *~
 .DS_Store
 
-# Папки с результатами, логами и моделями
-checkpoints_road_seg/
+# Папки с результатами, логами и моделями Keras/TF
+checkpoints_keras/
+logs_keras/
+*.h5
 
-# Кэш Hugging Face / Datasets
+# Кэш Hugging Face / Datasets (если используются)
 .cache/
 *.arrow
 
-# Большие файлы данных 
- *.tiff
- *.tif
- data/
-
-# Локальные артефакты
- *.png 

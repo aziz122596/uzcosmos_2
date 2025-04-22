@@ -1,29 +1,32 @@
-import torch
+# Используем стандартные метрики и лоссы из segmentation_models
+from segmentation_models.losses import bce_jaccard_loss, bce_dice_loss, dice_loss, jaccard_loss
+from segmentation_models.metrics import iou_score, f1_score as sm_dice_score # f1_score это Dice в этой библиотеке
 
-SMOOTH = 1e-6 # для избежания деления на ноль
+# Словарь с доступными лоссами и метриками для использования в train/evaluate
+LOSSES = {
+    "bce_jaccard": bce_jaccard_loss,
+    "bce_dice": bce_dice_loss,
+    "dice": dice_loss,
+    "jaccard": jaccard_loss,
+    # Добавьте другие или свои кастомные
+}
 
-def iou_score(output, target, threshold=0.5):
-    """Вычисляет IoU (Intersection over Union) для бинарной сегментации.
-       Предполагает, что output - это вероятности (после sigmoid).
-    """
-    with torch.no_grad():
-        pred = (output > threshold).float()
-        target = target.float()
+METRICS = {
+    "iou_score": iou_score,
+    "dice_score": sm_dice_score,
+    # Добавьте другие или свои кастомные
+}
 
-        intersection = (pred * target).sum(dim=(1, 2, 3)) # Суммируем по H, W, C (C=1)
-        union = pred.sum(dim=(1, 2, 3)) + target.sum(dim=(1, 2, 3)) - intersection
+# Функция для получения нужных объектов по имени
+def get_loss(name):
+    if name not in LOSSES:
+        raise ValueError(f"Неизвестное имя функции потерь: {name}. Доступные: {list(LOSSES.keys())}")
+    return LOSSES[name]
 
-        iou = (intersection + SMOOTH) / (union + SMOOTH) # Добавляем smooth
-    return iou.mean() # Усредняем по батчу
-
-def dice_coeff(output, target, threshold=0.5):
-    """Вычисляет Dice Coefficient (F1-score) для бинарной сегментации.
-       Предполагает, что output - это вероятности (после sigmoid).
-    """
-    with torch.no_grad():
-        pred = (output > threshold).float()
-        target = target.float()
-
-        intersection = (pred * target).sum(dim=(1, 2, 3))
-        dice = (2. * intersection + SMOOTH) / (pred.sum(dim=(1, 2, 3)) + target.sum(dim=(1, 2, 3)) + SMOOTH)
-    return dice.mean() # Усредняем по батчу
+def get_metrics(names):
+    metrics_list = []
+    for name in names:
+        if name not in METRICS:
+            raise ValueError(f"Неизвестное имя метрики: {name}. Доступные: {list(METRICS.keys())}")
+        metrics_list.append(METRICS[name])
+    return metrics_list

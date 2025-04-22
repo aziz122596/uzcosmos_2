@@ -1,154 +1,176 @@
-import torch
-from torch.utils.data import DataLoader
-import matplotlib.pyplot as plt
-import numpy as np
-import cv2
 import os
-from tqdm import tqdm
-import segmentation_models_pytorch as smp
-from sklearn.model_selection import train_test_split 
-from dataset import RoadDataset, get_validation_augmentation, get_preprocessing
-from model import build_model
-from metrics import iou_score, dice_coeff
-from utils import visualize_predictions # Импортируем функцию визуализации
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+import segmentation_models as sm
+from tqdm import tqdm # Добавим tqdm для оценки
+
+# Импорты из локальных модулей
+from data_loader import SegmentationDataGenerator, get_validation_augmentation_pipeline, get_preprocessing_pipeline
+from metrics_and_losses import get_loss, get_metrics 
+from utils import visualize_predictions
 
 # --- Конфигурация ---
-# путь в датасету
-DATA_DIR = '/path/dataset/' # Путь к датасету
-IMAGE_DIR_NAME = 'images'
-MASK_DIR_NAME = 'masks'
-IMG_EXTENSION = '.tiff'
-MASK_EXTENSION = '.tif'
+# !!! Должна совпадать с train.py !!!
 
-ENCODER = 'resnet34'
-ENCODER_WEIGHTS = None 
-NUM_CLASSES = 1
-ACTIVATION = 'sigmoid'
+# 1. Пути
+# !!! ВАЖНО: Замените на ваш реальный путь к ПАПКЕ, содержащей 'input' и 'output' !!!
+DATA_ROOT_DIR = '/path/to/your/training_data_folder/' 
+IMAGE_DIR_NAME = 'input'
+MASK_DIR_NAME = 'output'
+MODEL_PATH = './checkpoints_keras/best_model_epXX_val_iouX.XXXX.h5' 
 
+# 2. Параметры модели 
+BACKBONE = 'efficientnetb0'
+LOSS_FUNCTION_NAME = 'bce_jaccard'
+METRIC_NAMES = ['iou_score', 'dice_score'] 
+
+# 3. Параметры оценки
 IMG_HEIGHT = 256
 IMG_WIDTH = 256
+INPUT_SHAPE = (IMG_HEIGHT, IMG_WIDTH, 3)
 BATCH_SIZE = 16 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-CHECKPOINT_PATH = './checkpoints_road_seg/best_model.pth' 
-TRAIN_VAL_SPLIT = 0.8 
-RANDOM_STATE = 42      
-NUM_VIS_EXAMPLES = 5   
+N_CLASSES = 1
 
-print(f"Используемое устройство: {DEVICE}")
+# 4. Параметры разделения данных 
+TRAIN_VAL_SPLIT = 0.8
+RANDOM_STATE = 42
+USE_VALIDATION_AS_TEST = True
 
-# --- Подготовка тестовых данных ---
-# В проекте иметь отдельный test set.
-print("Подготовка тестовых (валидационных) данных...")
-image_dir_full = os.path.join(DATA_DIR, IMAGE_DIR_NAME)
-mask_dir_full = os.path.join(DATA_DIR, MASK_DIR_NAME)
+# 5. Параметры визуализации
+NUM_VIS_EXAMPLES = 5
 
-if not os.path.isdir(image_dir_full) or not os.path.isdir(mask_dir_full):
-     print(f"Ошибка: Папки с данными не найдены: {image_dir_full}, {mask_dir_full}")
+# --- Подготовка ---
+print(f"TensorFlow version: {tf.__version__}")
+print(f"Keras version: {keras.__version__}")
+print(f"Segmentation Models version: {sm.__version__}")
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    print(f"Доступно GPU: {len(gpus)}")
+else:
+    print("GPU не найдено, используется CPU.")
+
+
+# --- Загрузка тестовых ID ---
+print("Загрузка списка тестовых файлов...")
+image_dir = os.path.join(DATA_ROOT_DIR, IMAGE_DIR_NAME)
+mask_dir = os.path.join(DATA_ROOT_DIR, MASK_DIR_NAME)
+
+if not os.path.isdir(image_dir) or not os.path.isdir(mask_dir):
+     print(f"Ошибка: Папки с данными не найдены: {image_dir}, {mask_dir}")
      exit()
 
 try:
-    all_ids = sorted([f.split('.')[0] for f in os.listdir(image_dir_full) if f.endswith(IMG_EXTENSION)])
-    all_ids = [id_ for id_ in all_ids if os.path.exists(os.path.join(mask_dir_full, id_ + MASK_EXTENSION))]
+    all_image_filenames = sorted([f for f in os.listdir(image_dir) if f.lower().endswith('.png')])
+    all_ids_final = []
+    for img_filename in all_image_filenames:
+        mask_filepath = os.path.join(mask_dir, img_filename)
+        if os.path.exists(mask_filepath):
+             all_ids_final.append(img_filename)
 except FileNotFoundError:
-     print(f"Ошибка чтения файлов из папок данных.")
+     print(f"Ошибка: Не удалось прочитать файлы из {image_dir} или {mask_dir}.")
      exit()
 
-
-if not all_ids:
-    print("Ошибка: Не найдены пары изображений/масок для оценки.")
+if not all_ids_final:
+    print(f"Ошибка: Не найдены совпадающие пары изображений/масок.")
     exit()
 
-_, test_ids = train_test_split(all_ids, train_size=TRAIN_VAL_SPLIT, random_state=RANDOM_STATE)
-print(f"Используется {len(test_ids)} примеров для оценки (валидационный набор).")
+# Получаем тестовые ID (валидационные)
+_, test_ids = train_test_split(all_ids_final, train_size=TRAIN_VAL_SPLIT, random_state=RANDOM_STATE)
+print(f"Используется {len(test_ids)} сэмплов для оценки (валидационный набор).")
 
-try:
-    preprocessing_fn_eval = smp.encoders.get_preprocessing_fn(ENCODER, 'imagenet' if ENCODER_WEIGHTS == 'imagenet' else None)
-except:
-    preprocessing_fn_eval = None
 
-# Создание тестового датасета и загрузчика
-test_dataset = RoadDataset(
-    image_dir_full, mask_dir_full, test_ids, IMG_EXTENSION, MASK_EXTENSION,
-    transform=get_validation_augmentation(IMG_HEIGHT, IMG_WIDTH), 
-    preprocessing=get_preprocessing(preprocessing_fn_eval)
+# --- Препроцессинг и Генератор ---
+print("Создание тестового генератора...")
+preprocess_input = sm.get_preprocessing(BACKBONE)
+test_augmentation = get_validation_augmentation_pipeline(IMG_HEIGHT, IMG_WIDTH)
+preprocessing_pipeline = get_preprocessing_pipeline(preprocess_input)
+
+test_generator = SegmentationDataGenerator(
+    image_dir=image_dir,
+    mask_dir=mask_dir,
+    image_ids=test_ids, 
+    batch_size=BATCH_SIZE,
+    img_size=(IMG_HEIGHT, IMG_WIDTH),
+    n_classes=N_CLASSES,
+    augmentation=test_augmentation, 
+    preprocessing=preprocessing_pipeline,
+    shuffle_on_epoch_end=False 
 )
 
-num_workers = os.cpu_count() // 2 if os.cpu_count() else 0
-num_workers = min(num_workers, 4)
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=num_workers)
-print("Тестовый датасет и загрузчик созданы.")
-
-
-# --- Загрузка модели ---
-print(f"Загрузка лучшей модели из {CHECKPOINT_PATH}...")
-if not os.path.exists(CHECKPOINT_PATH):
-    print(f"Ошибка: Файл модели не найден: {CHECKPOINT_PATH}")
-    print("Убедитесь, что скрипт train.py был запущен и модель сохранена.")
+# --- Загрузка Модели ---
+print(f"Загрузка обученной модели из: {MODEL_PATH}")
+if not os.path.exists(MODEL_PATH):
+    print(f"Ошибка: Файл модели не найден: {MODEL_PATH}")
     exit()
 
-model = build_model(ENCODER, encoder_weights=None, num_classes=NUM_CLASSES, activation=ACTIVATION) # Веса загрузим из файла
+# Определяем custom_objects для лосса и метрик
+custom_objects = {}
 try:
-    model.load_state_dict(torch.load(CHECKPOINT_PATH, map_location=DEVICE))
-    model.to(DEVICE)
-    model.eval() 
+    loss_func_obj = get_loss(LOSS_FUNCTION_NAME)
+    custom_objects[getattr(loss_func_obj, '__name__', LOSS_FUNCTION_NAME)] = loss_func_obj
+except ValueError as e: print(f"Предупреждение: Не удалось найти лосс '{LOSS_FUNCTION_NAME}': {e}")
+try:
+    metrics_list_objs = get_metrics(METRIC_NAMES)
+    for metric_obj in metrics_list_objs:
+         custom_objects[getattr(metric_obj, '__name__', metric_obj)] = metric_obj
+except ValueError as e: print(f"Предупреждение: Не удалось найти метрику из '{METRIC_NAMES}': {e}")
+
+print(f"Используемые custom_objects для загрузки: {list(custom_objects.keys())}")
+
+try:
+    # Загружаем модель с compile=True, чтобы можно было использовать evaluate
+    model = keras.models.load_model(MODEL_PATH, custom_objects=custom_objects, compile=True)
     print("Модель успешно загружена.")
+    model.summary() 
 except Exception as e:
-    print(f"Ошибка при загрузке весов модели: {e}")
+    print(f"Ошибка при загрузке модели Keras: {e}")
+    print("Убедитесь, что custom_objects содержат правильные объекты потерь/метрик, использованные при обучении.")
     exit()
 
-# --- Оценка на тестовом наборе ---
-print("Запуск оценки на тестовом наборе...")
-test_iou_total = 0.0
-test_dice_total = 0.0
-all_images_for_vis = []
-all_true_masks_for_vis = []
-all_pred_masks_for_vis = []
+# --- Оценка Модели ---
+print(f"\nОценка модели на {len(test_ids)} тестовых сэмплах...")
+results = model.evaluate(test_generator, verbose=1)
 
-with torch.no_grad():
-    test_loop = tqdm(test_loader, desc="Testing", leave=False)
-    for i, (images, masks) in enumerate(test_loop):
-        images = images.to(DEVICE, non_blocking=True)
-        masks = masks.to(DEVICE, non_blocking=True) 
+print("\n--- Результаты Оценки ---")
+print(f"Test Loss: {results[0]:.5f}")
+metric_index = 1
+for name in METRIC_NAMES: 
+    if metric_index < len(results):
+         print(f"Test {name}: {results[metric_index]:.5f}")
+         metric_index += 1
+    else:
+         print(f"Не найдено значение для метрики {name} в результатах evaluate.")
 
-        outputs = model(images) # outputs shape: (B, 1, H, W), float32 (вероятности)
 
-        # Вычисляем метрики на батче
-        batch_iou = iou_score(outputs, masks)
-        batch_dice = dice_coeff(outputs, masks)
-        test_iou_total += batch_iou.item()
-        test_dice_total += batch_dice.item()
+# --- Визуализация Предсказаний ---
+print(f"\nГенерация {NUM_VIS_EXAMPLES} примеров предсказаний...")
+try:
+    vis_batch_x, vis_batch_y = test_generator.__getitem__(0) 
+except Exception as e:
+     print(f"Ошибка при получении батча из генератора для визуализации: {e}")
+     vis_batch_x, vis_batch_y = None, None
 
-        # Сохраняем несколько первых примеров для визуализации
-        if i == 0 and len(all_images_for_vis) < NUM_VIS_EXAMPLES :
-            all_images_for_vis.append(images.cpu())
-            all_true_masks_for_vis.append(masks.cpu())
-            all_pred_masks_for_vis.append(outputs.cpu())
+if vis_batch_x is not None and vis_batch_y is not None:
+    vis_batch_pred = model.predict(vis_batch_x)
 
-        test_loop.set_postfix(iou=f"{batch_iou:.4f}", dice=f"{batch_dice:.4f}")
+    num_to_show = min(NUM_VIS_EXAMPLES, vis_batch_x.shape[0])
+    print(f"Отображение первых {num_to_show} примеров...")
+    for i in range(num_to_show):
+        image = vis_batch_x[i] 
+        true_mask = vis_batch_y[i]
+        predicted_mask = vis_batch_pred[i] 
 
-# Рассчитываем средние метрики по всем батчам
-final_test_iou = test_iou_total / len(test_loader)
-final_test_dice = test_dice_total / len(test_loader)
-
-print("\n--- Результаты на тестовом (валидационном) наборе ---")
-print(f"Test IoU: {final_test_iou:.4f}")
-print(f"Test Dice: {final_test_dice:.4f}")
-
-# --- Визуализация результатов ---
-print("\nСоздание визуализации предсказаний...")
-if all_images_for_vis:
-    vis_images = torch.cat(all_images_for_vis)
-    vis_true_masks = torch.cat(all_true_masks_for_vis)
-    vis_pred_masks = torch.cat(all_pred_masks_for_vis)
-
-    visualize_predictions(
-        vis_images,
-        vis_true_masks,
-        vis_pred_masks,
-        num_examples=NUM_VIS_EXAMPLES,
-        filename="prediction_examples_road_seg.png"
-    )
+        save_filename = f"prediction_example_{i}.png"
+        visualize_predictions(
+            image,
+            true_mask,
+            predicted_mask, 
+            save_path=save_filename
+        )
 else:
-    print("Не удалось собрать примеры для визуализации.")
+     print("Не удалось получить батч для визуализации.")
 
 print("\n--- Скрипт evaluate.py завершен ---")
